@@ -1,99 +1,48 @@
 import streamlit as st
-import pandas as pd
 import google.generativeai as genai
-import json
-import tempfile
 import os
-from datetime import datetime
 
-# --- 1. APIキーの設定 ---
+st.title("🔍 APIキー & モデル診断ツール")
+
+# 1. APIキーのチェック
+st.header("1. APIキーの確認")
 try:
-    API_KEY = st.secrets["GEMINI_API_KEY"]
-    genai.configure(api_key=API_KEY)
-except:
-    st.error("APIキーが設定されていません。StreamlitのSecretsを設定してください。")
-    st.stop()
+    # Secretsからキーを取得
+    api_key = st.secrets["GEMINI_API_KEY"]
+    
+    # キーの隠蔽表示（セキュリティのため）
+    masked_key = api_key[:5] + "..." + api_key[-4:]
+    st.success(f"✅ StreamlitのSecretsからキーを読み込めました: {masked_key}")
+    
+    # GenAIにセット
+    genai.configure(api_key=api_key)
 
-# --- 2. モデル設定 (Gemini 3.0 Pro) ---
-# あなたの指定通り 3.0 Pro を呼び出します
-TARGET_MODEL_NAME = 'gemini-3.0-pro' 
-
-try:
-    model = genai.GenerativeModel(TARGET_MODEL_NAME)
 except Exception as e:
-    st.error(f"モデル設定エラー: {e}")
+    st.error("❌ APIキーが読み込めません！")
+    st.error("Streamlitの 'Secrets' 設定を確認してください。")
+    st.code('GEMINI_API_KEY = "ここにキー"')
+    st.stop() # ここで止める
 
-st.title("💰 My AI 家計簿 (Gemini 3.0 Pro)")
+# 2. 接続テスト & モデル一覧取得
+st.header("2. Googleサーバーとの通信テスト")
 
-# --- デバッグ機能: モデルが見つからない場合の救済策 ---
-# 万が一 3.0 Pro という名前でエラーが出る場合、使える名前一覧を表示します
-with st.expander("🛠️ 使用可能なモデル一覧を確認する（エラー時用）"):
-    if st.button("モデルリストを取得"):
-        try:
-            available_models = []
-            for m in genai.list_models():
-                if 'generateContent' in m.supported_generation_methods:
-                    available_models.append(m.name)
-            st.write(available_models)
-            st.info(f"現在の指定: {TARGET_MODEL_NAME}")
-        except Exception as e:
-            st.error(f"リスト取得失敗: {e}")
-
-# --- 3. アプリ本体 ---
-if 'expenses' not in st.session_state:
-    st.session_state.expenses = pd.DataFrame(columns=["日付", "品目", "カテゴリ", "金額", "AIコメント"])
-
-tab1, tab2 = st.tabs(["🎙️ 入力", "📊 分析"])
-
-with tab1:
-    st.write(f"起動中のモデル: **{TARGET_MODEL_NAME}**")
-    audio_value = st.audio_input("録音ボタンを押して話しかけてください")
-
-    if audio_value:
-        with st.spinner(f'{TARGET_MODEL_NAME} が思考中...'):
-            try:
-                with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as tmp_file:
-                    tmp_file.write(audio_value.read())
-                    tmp_path = tmp_file.name
-
-                audio_file = genai.upload_file(path=tmp_path)
-
-                prompt = """
-                この音声から家計簿データを抽出して。
-                JSON形式: {"item": "品目", "category": "カテゴリ", "amount": 数値, "comment": "短いアドバイス"}
-                金額不明なら0。
-                """
-                response = model.generate_content([prompt, audio_file])
-                
-                # JSONクリーニング処理
-                json_str = response.text.replace("```json", "").replace("```", "").strip()
-                data = json.loads(json_str)
-
-                new_row = {
-                    "日付": datetime.now().strftime("%Y-%m-%d"),
-                    "品目": data['item'],
-                    "カテゴリ": data['category'],
-                    "金額": data['amount'],
-                    "AIコメント": data['comment']
-                }
-                st.session_state.expenses = pd.concat([st.session_state.expenses, pd.DataFrame([new_row])], ignore_index=True)
-                
-                st.success(f"✅ 記録完了")
-                st.write(f"**{data['item']}**: ¥{data['amount']}")
-                st.info(f"🤖 {data['comment']}")
-                
-                os.remove(tmp_path)
-
-            except Exception as e:
-                st.error(f"エラーが発生しました: {e}")
-                # エラーの詳細を表示（モデル名のミスか、API制限かを見分けるため）
-                st.code(str(e))
-
-with tab2:
-    if not st.session_state.expenses.empty:
-        df = st.session_state.expenses
-        st.metric("合計", f"¥{df['金額'].sum():,}")
-        st.bar_chart(df.groupby("カテゴリ")["金額"].sum())
-        st.dataframe(df)
-    else:
-        st.write("データなし")
+if st.button("モデル一覧を取得する（ここを押す）"):
+    try:
+        models_list = []
+        # Googleに「使えるモデル教えて」と聞く
+        for m in genai.list_models():
+            # "generateContent"（会話機能）が使えるモデルだけ抽出
+            if 'generateContent' in m.supported_generation_methods:
+                models_list.append(m.name)
+        
+        if models_list:
+            st.success("🎉 通信成功！あなたのキーで使えるモデルは以下です：")
+            st.write("この中のどれか一つをコードに書けば動きます。")
+            st.json(models_list) # 一覧を表示
+        else:
+            st.warning("⚠️ 通信はできましたが、使えるモデルが見つかりませんでした。")
+            
+    except Exception as e:
+        st.error("❌ Googleサーバーと通信できませんでした。")
+        st.error("APIキー自体が間違っているか、有効期限切れの可能性があります。")
+        st.code(str(e))

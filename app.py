@@ -10,7 +10,7 @@ from oauth2client.service_account import ServiceAccountCredentials
 
 # --- 1. 設定エリア ---
 # https://docs.google.com/spreadsheets/d/1EqrzveseDusUHWXlXfwewDcxJ412UIA7BtLjiEydDh4/edit?gid=0#gid=0
-SPREADSHEET_URL = "https://docs.google.com/spreadsheets/d/xxxxxxxxxxxx/edit"
+SPREADSHEET_URL = "https://docs.google.com/spreadsheets/d/1EqrzveseDusUHWXlXfwewDcxJ412UIA7BtLjiEydDh4/edit"
 
 # APIキー設定
 try:

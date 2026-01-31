@@ -33,7 +33,7 @@ def add_to_sheet(data_dict):
     try:
         # SecretsからJSON文字列を読み込む
         json_str = st.secrets["GCP_JSON_STR"]
-        creds_dict = json.loads(json_str)
+        creds_dict = json.loads(json_str, strict=False)
         
         scope = ['https://spreadsheets.google.com/feeds','https://www.googleapis.com/auth/drive']
         creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)

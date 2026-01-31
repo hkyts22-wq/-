@@ -1,0 +1,73 @@
+import streamlit as st
+import pandas as pd
+import google.generativeai as genai
+import json
+import tempfile
+import os
+from datetime import datetime
+
+# --- 本番用設定：鍵は「金庫」から取り出す ---
+# Streamlit Cloudの「Secrets」からキーを読み込む設定です
+try:
+    API_KEY = st.secrets["GEMINI_API_KEY"]
+    genai.configure(api_key=API_KEY)
+except:
+    st.error("APIキーが設定されていません。StreamlitのSecretsを設定してください。")
+    st.stop()
+
+model = genai.GenerativeModel('gemini-1.5-pro-latest') 
+
+if 'expenses' not in st.session_state:
+    st.session_state.expenses = pd.DataFrame(columns=["日付", "品目", "カテゴリ", "金額", "AIコメント"])
+
+st.title("💰 My AI 家計簿")
+
+tab1, tab2 = st.tabs(["🎙️ 入力", "📊 分析"])
+
+with tab1:
+    st.info("💡 音声入力ボタンを押して話しかけてください")
+    audio_value = st.audio_input("録音開始")
+
+    if audio_value:
+        with st.spinner('Geminiが音声を解析中...'):
+            try:
+                with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as tmp_file:
+                    tmp_file.write(audio_value.read())
+                    tmp_path = tmp_file.name
+
+                audio_file = genai.upload_file(path=tmp_path)
+
+                prompt = """
+                この音声から家計簿データを抽出して。
+                JSON形式: {"item": "品目", "category": "カテゴリ", "amount": 数値, "comment": "短いアドバイス"}
+                金額不明なら0。
+                """
+                response = model.generate_content([prompt, audio_file])
+                
+                json_str = response.text.replace("```json", "").replace("```", "").strip()
+                data = json.loads(json_str)
+
+                new_row = {
+                    "日付": datetime.now().strftime("%Y-%m-%d"),
+                    "品目": data['item'],
+                    "カテゴリ": data['category'],
+                    "金額": data['amount'],
+                    "AIコメント": data['comment']
+                }
+                st.session_state.expenses = pd.concat([st.session_state.expenses, pd.DataFrame([new_row])], ignore_index=True)
+                
+                st.success(f"✅ 記録: {data['item']} ¥{data['amount']}")
+                st.info(f"🤖 {data['comment']}")
+                os.remove(tmp_path)
+
+            except Exception as e:
+                st.error(f"エラー: {e}")
+
+with tab2:
+    if not st.session_state.expenses.empty:
+        df = st.session_state.expenses
+        st.metric("合計", f"¥{df['金額'].sum():,}")
+        st.bar_chart(df.groupby("カテゴリ")["金額"].sum())
+        st.dataframe(df)
+    else:
+        st.write("データなし")

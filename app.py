@@ -40,7 +40,7 @@ def add_to_sheet(data_dict):
         client = gspread.authorize(creds)
         
         # シートを開く
-        sheet = client.open_by_url(SPREADSHEET_URL).sheet1
+        sheet = client.open_by_url(SPREADSHEET_URL).get_worksheet(0)
         
         # ヘッダーが無い場合は追加（初回のみ）
         if len(sheet.get_all_values()) == 0:

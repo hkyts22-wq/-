@@ -1,115 +1,63 @@
 import streamlit as st
-import pandas as pd
-import google.generativeai as genai
 import json
-import tempfile
-import os
-from datetime import datetime
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
-# --- 1. 設定エリア ---
-# https://docs.google.com/spreadsheets/d/1EqrzveseDusUHWXlXfwewDcxJ412UIA7BtLjiEydDh4/edit?gid=0#gid=0
-SPREADSHEET_URL = "https://docs.google.com/spreadsheets/d/1EqrzveseDusUHWXlXfwewDcxJ412UIA7BtLjiEydDh4/edit"
+st.title("🏥 スプレッドシート接続診断")
 
-# APIキー設定
+# 1. URLの確認
+SPREADSHEET_URL = "https://docs.google.com/spreadsheets/d/1EqrzveseDusUHWXlXfwewDcxJ412UIA7BtLjiEydDh4/edit"
+st.write(f"📝 ターゲットURL: `{SPREADSHEET_URL}`")
+
+# 2. 認証情報のテスト
+st.subheader("ステップ1: ロボットの認証")
 try:
-    API_KEY = st.secrets["GEMINI_API_KEY"]
-    genai.configure(api_key=API_KEY)
-except:
-    st.error("APIキー設定エラー: Secretsを確認してください")
+    json_str = st.secrets["GCP_JSON_STR"]
+    creds_dict = json.loads(json_str, strict=False)
+    
+    # ロボットのメールアドレスを表示
+    bot_email = creds_dict.get("client_email", "不明")
+    st.success(f"✅ 認証情報の読み込み成功！\n\nロボット名: `{bot_email}`")
+    
+    scope = ['https://spreadsheets.google.com/feeds','https://www.googleapis.com/auth/drive']
+    creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+    client = gspread.authorize(creds)
+    st.info("Googleサーバーへのログインに成功しました。")
+
+except Exception as e:
+    st.error("❌ 認証エラー：Secretsの設定が間違っています。")
+    st.code(str(e))
     st.stop()
 
-# モデル設定 (Gemini 3.0 Pro Preview)
-TARGET_MODEL_NAME = 'gemini-3-pro-preview'
+# 3. スプレッドシート発見テスト
+st.subheader("ステップ2: シートの探索")
 try:
-    model = genai.GenerativeModel(TARGET_MODEL_NAME)
-except:
-    st.error(f"モデルエラー: {TARGET_MODEL_NAME} が見つかりません")
-
-# --- 2. スプレッドシート接続機能 ---
-def add_to_sheet(data_dict):
-    """スプレッドシートに行を追加する"""
-    try:
-        # SecretsからJSON文字列を読み込む
-        json_str = st.secrets["GCP_JSON_STR"]
-        creds_dict = json.loads(json_str, strict=False)
-        
-        scope = ['https://spreadsheets.google.com/feeds','https://www.googleapis.com/auth/drive']
-        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
-        client = gspread.authorize(creds)
-        
-        # シートを開く
-        sheet = client.open_by_url(SPREADSHEET_URL).get_worksheet(0)
-        
-        # ヘッダーが無い場合は追加（初回のみ）
-        if len(sheet.get_all_values()) == 0:
-            sheet.append_row(["日付", "品目", "カテゴリ", "金額", "AIコメント"])
-            
-        # データ追加
-        row = [
-            datetime.now().strftime("%Y-%m-%d"),
-            data_dict['item'],
-            data_dict['category'],
-            data_dict['amount'],
-            data_dict['comment']
-        ]
-        sheet.append_row(row)
-        return True
-    except Exception as e:
-        st.error(f"スプレッドシート保存エラー: {e}")
-        return False
-
-# --- 3. アプリ画面 ---
-st.title(f"💰 My AI 家計簿 (Complete)")
-
-tab1, tab2 = st.tabs(["🎙️ 入力", "📊 分析"])
-
-with tab1:
-    st.info(f"Using: {TARGET_MODEL_NAME}")
-    st.write("話しかけると、Googleスプレッドシートに記録されます。")
+    # URLからシートを探す
+    spreadsheet = client.open_by_url(SPREADSHEET_URL)
+    st.success(f"✅ スプレッドシート「{spreadsheet.title}」を見つけました！")
     
-    audio_value = st.audio_input("録音開始")
+    # 1枚目のシートを開く
+    sheet = spreadsheet.get_worksheet(0)
+    st.success("✅ 1枚目のシートを開けました！")
 
-    if audio_value:
-        with st.spinner('Geminiが解析＆保存中...'):
-            try:
-                # 音声保存
-                with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as tmp_file:
-                    tmp_file.write(audio_value.read())
-                    tmp_path = tmp_file.name
+    # 4. 書き込みテスト
+    st.subheader("ステップ3: 書き込みテスト")
+    try:
+        sheet.append_row(["診断テスト", "接続OK", "成功", 100, "テスト成功です"])
+        st.balloons()
+        st.success("🎉 書き込み成功！スプレッドシートを確認してください。")
+    except Exception as e:
+        st.error("❌ 書き込みエラー：権限が「閲覧者」になっていませんか？")
+        st.error(str(e))
 
-                # Geminiへ送信
-                audio_file = genai.upload_file(path=tmp_path)
-                
-                prompt = """
-                この音声は支出の記録です。家計簿データを作成してください。
-                JSON形式: {"item": "品目", "category": "カテゴリ", "amount": 数値, "comment": "アドバイス"}
-                金額不明は0。
-                """
-                
-                response = model.generate_content([prompt, audio_file])
-                
-                # JSON抽出
-                json_str = response.text
-                if "```json" in json_str:
-                    json_str = json_str.split("```json")[1].split("```")[0]
-                elif "```" in json_str:
-                    json_str = json_str.replace("```", "")
-                
-                data = json.loads(json_str.strip())
-                
-                # ★シートへ保存実行！
-                if add_to_sheet(data):
-                    st.success("✅ スプレッドシートに保存しました！")
-                    st.write(f"**{data['item']}**: ¥{data['amount']}")
-                    st.info(f"🤖 {data['comment']}")
-                
-                os.remove(tmp_path)
-
-            except Exception as e:
-                st.error(f"エラー: {e}")
-
-with tab2:
-    st.write("データはGoogleスプレッドシートに保存されています。")
-    st.link_button("スプレッドシートを開く", SPREADSHEET_URL)
+except Exception as e:
+    st.error("❌ シートが見つかりません (404エラー)")
+    st.warning("考えられる原因：")
+    st.markdown(f"""
+    1. **共有設定のミス**: 
+       上の「ロボット名 (`{bot_email}`)」が、スプレッドシートの「共有」に入っていますか？
+       もう一度スプレッドシートの「共有」ボタンを押して確認してください。
+    2. **APIが無効**: 
+       Google Cloud Consoleで「Google Drive API」が有効になっていない可能性があります。
+    """)
+    st.code(str(e))

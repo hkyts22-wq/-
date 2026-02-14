@@ -12,6 +12,11 @@ st.write(f"📝 ターゲットURL: `{SPREADSHEET_URL}`")
 # 2. 認証情報のテスト
 st.subheader("ステップ1: ロボットの認証")
 try:
+    # Secretsの読み込みテスト
+    if "GCP_JSON_STR" not in st.secrets:
+        st.error("❌ Secretsに 'GCP_JSON_STR' が見つかりません！")
+        st.stop()
+        
     json_str = st.secrets["GCP_JSON_STR"]
     creds_dict = json.loads(json_str, strict=False)
     
@@ -46,6 +51,7 @@ try:
         sheet.append_row(["診断テスト", "接続OK", "成功", 100, "テスト成功です"])
         st.balloons()
         st.success("🎉 書き込み成功！スプレッドシートを確認してください。")
+        st.write("これが成功したら、元の家計簿コードに戻しても大丈夫です！")
     except Exception as e:
         st.error("❌ 書き込みエラー：権限が「閲覧者」になっていませんか？")
         st.error(str(e))

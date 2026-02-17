@@ -7,15 +7,14 @@ import os
 from datetime import datetime
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
-from PIL import Image
-import hashlib # ★追加：重複チェック用
+import hashlib
 
 # --- 1. 設定エリア ---
-# ★ここにあなたのスプレッドシートURLを入れてください
+# ★あなたのスプレッドシートURL
 SPREADSHEET_URL = "https://docs.google.com/spreadsheets/d/1EqrzveseDusUHWXlXfwewDcxJ412UIA7BtLjiEydDh4/edit?gid=0#gid=0"
 
 # ★あなたの毎月の予算（円）
-MONTHLY_BUDGET = 300000 
+MONTHLY_BUDGET = 30000
 
 # APIキー設定
 try:
@@ -25,8 +24,9 @@ except:
     st.error("APIキー設定エラー: Secretsを確認してください")
     st.stop()
 
-# モデル設定
+# モデル設定 (gemini-3-pro-preview)
 TARGET_MODEL_NAME = 'gemini-3-pro-preview'
+
 try:
     model = genai.GenerativeModel(TARGET_MODEL_NAME)
 except:
@@ -67,38 +67,59 @@ def add_to_sheet(data_list):
         return False
 
 def get_data_df():
-    """スプレッドシートのデータをDataFrameとして取得"""
+    """スプレッドシートのデータをDataFrameとして取得（強力なクリーニング付き）"""
     try:
         sheet = get_sheet()
         records = sheet.get_all_records()
         df = pd.DataFrame(records)
-        if not df.empty and '日付' not in df.columns:
+        
+        # データが空の場合
+        if df.empty:
             return pd.DataFrame()
+
+        # カラム名の余計な空白を削除
+        df.columns = df.columns.str.strip()
+        
+        # 必須カラムチェック
+        if '日付' not in df.columns or '金額' not in df.columns:
+            st.error("⚠️ スプレッドシートに「日付」または「金額」の列が見つかりません。1行目を確認してください。")
+            return pd.DataFrame()
+            
         return df
-    except:
+    except Exception as e:
+        st.error(f"データ読み込みエラー: {e}")
         return pd.DataFrame()
 
 # --- 3. アプリ画面 ---
-st.title(f"💰 My AI 家計簿 (Dashboard)")
+st.title(f"💰 My AI 家計簿")
 
 # データを取得
 df = get_data_df()
 
-# --- 上部：予算＆収支サマリー ---
-if not df.empty and '日付' in df.columns and '金額' in df.columns:
-    current_month = datetime.now().strftime("%Y-%m")
-    df['日付'] = df['日付'].astype(str)
-    df['金額'] = pd.to_numeric(df['金額'], errors='coerce').fillna(0)
-    
-    monthly_df = df[df['日付'].str.startswith(current_month)]
-    total_spent = monthly_df['金額'].sum()
-else:
-    monthly_df = pd.DataFrame()
-    total_spent = 0
+# --- データの前処理（ここを強化しました） ---
+monthly_df = pd.DataFrame()
+total_spent = 0
+
+if not df.empty:
+    try:
+        # 日付を強制的に統一フォーマットに変換
+        df['日付'] = pd.to_datetime(df['日付'], errors='coerce')
+        # 金額を数値に変換
+        df['金額'] = pd.to_numeric(df['金額'], errors='coerce').fillna(0)
+        
+        # 今月のデータを抽出
+        current_month = datetime.now().strftime("%Y-%m")
+        # 日付が無効な行（Nat）を除外してフィルタリング
+        monthly_df = df[df['日付'].dt.strftime('%Y-%m') == current_month].copy()
+        
+        total_spent = monthly_df['金額'].sum()
+    except Exception as e:
+        st.error(f"集計エラー: {e}")
 
 remaining = MONTHLY_BUDGET - total_spent
-ratio = min(total_spent / MONTHLY_BUDGET, 1.0)
+ratio = min(total_spent / MONTHLY_BUDGET, 1.0) if MONTHLY_BUDGET > 0 else 0
 
+# --- 上部サマリー ---
 col1, col2, col3 = st.columns(3)
 col1.metric("📅 今月の出費", f"¥{total_spent:,.0f}")
 col2.metric("💰 残り予算", f"¥{remaining:,.0f}")
@@ -109,10 +130,10 @@ if ratio >= 1.0:
     st.error("💸 予算オーバーです！")
 
 # --- メインエリア ---
-tab1, tab2, tab3 = st.tabs(["🎙️ 入力・撮影", "📈 分析グラフ", "📝 履歴リスト"])
+tab1, tab2 = st.tabs(["🎙️ 音声入力", "📊 分析グラフ"])
 
 SYSTEM_PROMPT = """
-あなたは家計簿アシスタントです。入力からJSONデータを作成してください。
+あなたは家計簿アシスタントです。音声入力からJSONデータを作成してください。
 フォーマットは必ずリスト形式 `[{"item":..., "category":..., "amount":...}, ...]` で返してください。
 ユーザーが「固定費」と言及した場合は、以下のリストを返してください：
 [
@@ -122,82 +143,60 @@ SYSTEM_PROMPT = """
 ]
 """
 
-# ★重複防止用の記憶領域を作る
 if "processed_hash" not in st.session_state:
     st.session_state.processed_hash = ""
 
 with tab1:
-    st.write("##### 🗣️ 音声で入力")
-    audio_value = st.audio_input("話しかけて記録")
+    st.write("##### 🗣️ 話しかけて記録")
+    audio_value = st.audio_input("録音開始")
 
     if audio_value:
-        # ★データの指紋（ハッシュ）を作って、前回と同じなら無視する
         audio_bytes = audio_value.getvalue()
         current_hash = hashlib.md5(audio_bytes).hexdigest()
         
         if st.session_state.processed_hash != current_hash:
-            with st.spinner('音声解析中...'):
+            with st.spinner('解析中...'):
                 with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as tmp_file:
                     tmp_file.write(audio_bytes)
                     tmp_path = tmp_file.name
                 
-                audio_file = genai.upload_file(path=tmp_path)
-                response = model.generate_content([SYSTEM_PROMPT, audio_file])
                 try:
+                    audio_file = genai.upload_file(path=tmp_path)
+                    response = model.generate_content([SYSTEM_PROMPT, audio_file])
                     json_str = response.text.replace("```json", "").replace("```", "").strip()
                     data_list = json.loads(json_str)
                     if isinstance(data_list, dict): data_list = [data_list]
                     
                     if add_to_sheet(data_list):
                         st.success(f"✅ {len(data_list)}件 保存しました！")
-                        # ★処理が終わったら「今のデータ」を記憶する
                         st.session_state.processed_hash = current_hash
                         st.rerun()
                 except Exception as e:
                     st.error(f"エラー: {e}")
-                os.remove(tmp_path)
-
-    st.write("---")
-    st.write("##### 📸 レシートで入力")
-    img_file = st.camera_input("レシート撮影")
-    
-    if img_file:
-        # ★画像も同様に重複チェック
-        img_bytes = img_file.getvalue()
-        current_img_hash = hashlib.md5(img_bytes).hexdigest()
-
-        if st.session_state.processed_hash != current_img_hash:
-            with st.spinner('解析中...'):
-                image = Image.open(img_file)
-                response = model.generate_content([SYSTEM_PROMPT, image])
-                try:
-                    json_str = response.text.replace("```json", "").replace("```", "").strip()
-                    data_list = json.loads(json_str)
-                    if isinstance(data_list, dict): data_list = [data_list]
-                    
-                    if add_to_sheet(data_list):
-                        st.success(f"✅ {len(data_list)}件 保存しました！")
-                        st.session_state.processed_hash = current_img_hash
-                        st.rerun()
-                except Exception as e:
-                    st.error(f"エラー: {e}")
+                finally:
+                    if os.path.exists(tmp_path):
+                        os.remove(tmp_path)
 
 with tab2:
     st.subheader("📊 今月の収支レポート")
+    
     if not monthly_df.empty:
-        st.write("**カテゴリ別の支出割合**")
+        # カテゴリ別 円グラフ（のような棒グラフ）
+        st.write("**カテゴリ別の支出**")
         category_sum = monthly_df.groupby('カテゴリ')['金額'].sum()
         st.bar_chart(category_sum)
 
+        # 日別推移
         st.write("**日別の支出推移**")
         daily_sum = monthly_df.groupby('日付')['金額'].sum()
         st.line_chart(daily_sum)
+        
+        # 生データ確認用（デバッグ）
+        with st.expander("データ詳細を見る"):
+            st.dataframe(monthly_df)
     else:
-        st.info("データがありません")
-
-with tab3:
-    st.subheader("📝 最近の記録")
-    if not df.empty and '日付' in df.columns:
-        st.dataframe(df.tail(10).iloc[::-1])
-    else:
-        st.write("データなし")
+        st.info("今月のデータがまだありません。")
+        if not df.empty:
+            st.warning(f"※スプレッドシート全体には {len(df)} 件のデータがありますが、日付が今月（{datetime.now().strftime('%Y-%m')}）のものがありません。")
+            with st.expander("全データを確認"):
+                st.dataframe(df)

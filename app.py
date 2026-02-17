@@ -25,7 +25,7 @@ except:
     st.stop()
 
 # モデル設定
-TARGET_MODEL_NAME = 'gemini-2.0-flash-exp'
+TARGET_MODEL_NAME = 'gemini-3-pro-preview'
 try:
     model = genai.GenerativeModel(TARGET_MODEL_NAME)
 except:

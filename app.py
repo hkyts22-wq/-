@@ -14,7 +14,7 @@ import hashlib
 SPREADSHEET_URL = "https://docs.google.com/spreadsheets/d/1EqrzveseDusUHWXlXfwewDcxJ412UIA7BtLjiEydDh4/edit?gid=0#gid=0"
 
 # ★あなたの毎月の予算（円）
-MONTHLY_BUDGET = 30000
+MONTHLY_BUDGET = 300000
 
 # APIキー設定
 try:

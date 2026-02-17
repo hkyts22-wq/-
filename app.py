@@ -12,10 +12,10 @@ import hashlib # ★追加：重複チェック用
 
 # --- 1. 設定エリア ---
 # ★ここにあなたのスプレッドシートURLを入れてください
-SPREADSHEET_URL = "https://docs.google.com/spreadsheets/d/xxxxxxxxxxxx/edit"
+SPREADSHEET_URL = "https://docs.google.com/spreadsheets/d/1EqrzveseDusUHWXlXfwewDcxJ412UIA7BtLjiEydDh4/edit?gid=0#gid=0"
 
 # ★あなたの毎月の予算（円）
-MONTHLY_BUDGET = 100000 
+MONTHLY_BUDGET = 300000 
 
 # APIキー設定
 try:
@@ -26,7 +26,7 @@ except:
     st.stop()
 
 # モデル設定
-TARGET_MODEL_NAME = 'gemini-1.5-flash'
+TARGET_MODEL_NAME = 'gemini-3-pro-preview'
 try:
     model = genai.GenerativeModel(TARGET_MODEL_NAME)
 except:

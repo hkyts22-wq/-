@@ -11,10 +11,10 @@ from PIL import Image
 
 # --- 1. 設定エリア ---
 # ★ここにあなたのスプレッドシートURLを入れてください
-SPREADSHEET_URL = "https://docs.google.com/spreadsheets/d/xxxxxxxxxxxx/edit"
+SPREADSHEET_URL = "https://docs.google.com/spreadsheets/d/1EqrzveseDusUHWXlXfwewDcxJ412UIA7BtLjiEydDh4/edit?gid=0#gid=0"
 
 # ★あなたの毎月の予算（円）
-MONTHLY_BUDGET = 100000 
+MONTHLY_BUDGET = 200000 
 
 # APIキー設定
 try:
@@ -25,7 +25,7 @@ except:
     st.stop()
 
 # モデル設定
-TARGET_MODEL_NAME = 'gemini-2.0-flash-exp' # 画像処理も得意な高速モデルに変更
+TARGET_MODEL_NAME = 'gemini-2.0-flash-exp'
 try:
     model = genai.GenerativeModel(TARGET_MODEL_NAME)
 except:
@@ -45,15 +45,11 @@ def add_to_sheet(data_list):
     """リスト形式のデータをまとめて保存する"""
     try:
         sheet = get_sheet()
-        
-        # ヘッダー確認
         if len(sheet.get_all_values()) == 0:
             sheet.append_row(["日付", "品目", "カテゴリ", "金額", "AIコメント"])
             
-        # データ追加ループ
         current_date = datetime.now().strftime("%Y-%m-%d")
         rows_to_add = []
-        
         for item in data_list:
             row = [
                 current_date,
@@ -63,134 +59,127 @@ def add_to_sheet(data_list):
                 item.get('comment', '')
             ]
             rows_to_add.append(row)
-            
-        sheet.append_rows(rows_to_add) # 一括追加
+        sheet.append_rows(rows_to_add)
         return True
     except Exception as e:
         st.error(f"保存エラー: {e}")
         return False
 
-def get_current_total():
-    """今月の使用合計額を計算する"""
+def get_data_df():
+    """スプレッドシートのデータをDataFrameとして取得"""
     try:
         sheet = get_sheet()
         records = sheet.get_all_records()
         df = pd.DataFrame(records)
-        
-        if df.empty:
-            return 0
-            
-        # 日付でフィルタ（今月分のみ）
-        current_month = datetime.now().strftime("%Y-%m") # 例: "2024-05"
-        # 日付カラムを文字列として扱う
-        df['日付'] = df['日付'].astype(str)
-        # 今月のデータだけ抽出
-        monthly_df = df[df['日付'].str.startswith(current_month)]
-        
-        total = monthly_df['金額'].sum()
-        return total
+        return df
     except:
-        return 0
+        return pd.DataFrame()
 
 # --- 3. アプリ画面 ---
-st.title(f"💰 My AI 家計簿 (Ultimate)")
+st.title(f"💰 My AI 家計簿 (Dashboard)")
 
-# --- 機能1: 予算バー ---
-try:
-    total_spent = get_current_total()
-    remaining = MONTHLY_BUDGET - total_spent
-    ratio = min(total_spent / MONTHLY_BUDGET, 1.0)
+# データを取得
+df = get_data_df()
+
+# --- 上部：予算＆収支サマリー ---
+if not df.empty:
+    # 今月のデータを抽出
+    current_month = datetime.now().strftime("%Y-%m")
+    df['日付'] = df['日付'].astype(str)
+    # 数値変換（エラー回避）
+    df['金額'] = pd.to_numeric(df['金額'], errors='coerce').fillna(0)
     
-    st.metric("今月の出費", f"¥{total_spent:,}", delta=f"残り ¥{remaining:,}")
-    
-    bar_color = "red" if ratio >= 1.0 else "green"
-    st.progress(ratio)
-    if ratio >= 1.0:
-        st.error("💸 予算オーバーです！節約しましょう！")
-    elif ratio >= 0.8:
-        st.warning("⚠️ 予算の8割を使いました。注意！")
+    monthly_df = df[df['日付'].str.startswith(current_month)]
+    total_spent = monthly_df['金額'].sum()
+else:
+    monthly_df = pd.DataFrame()
+    total_spent = 0
 
-except Exception as e:
-    st.warning("データがまだ少ないため分析できません")
+remaining = MONTHLY_BUDGET - total_spent
+ratio = min(total_spent / MONTHLY_BUDGET, 1.0)
 
-# --- 入力エリア ---
-tab1, tab2, tab3 = st.tabs(["🎙️ 音声入力", "📸 レシート", "📊 データ確認"])
+# 3カラムでスタイリッシュに表示
+col1, col2, col3 = st.columns(3)
+col1.metric("📅 今月の出費", f"¥{total_spent:,.0f}")
+col2.metric("💰 残り予算", f"¥{remaining:,.0f}")
+col3.metric("📊 消化率", f"{ratio*100:.1f}%")
 
-# 共通のプロンプト（固定費リスト入り）
+st.progress(ratio)
+if ratio >= 1.0:
+    st.error("💸 予算オーバーです！")
+
+# --- メインエリア ---
+tab1, tab2, tab3 = st.tabs(["🎙️ 入力・撮影", "📈 分析グラフ", "📝 履歴リスト"])
+
+# 共通プロンプト
 SYSTEM_PROMPT = """
-あなたは家計簿アシスタントです。入力（音声または画像）からJSONデータを作成してください。
-フォーマットは必ずリスト形式のJSON `[{"item":..., "amount":...}, ...]` で返してください。
-
-★特別ルール：
-ユーザーが「固定費」や「いつもの」と言及した場合は、入力内容に関わらず以下のリストを返してください：
+あなたは家計簿アシスタントです。入力からJSONデータを作成してください。
+フォーマットは必ずリスト形式 `[{"item":..., "category":..., "amount":...}, ...]` で返してください。
+ユーザーが「固定費」と言及した場合は、以下のリストを返してください：
 [
-    {"item": "家賃", "category": "住居費", "amount": 80000, "comment": "毎月の家賃"},
-    {"item": "電気代", "category": "光熱費", "amount": 5000, "comment": "概算"},
-    {"item": "スマホ代", "category": "通信費", "amount": 3500, "comment": "基本料"}
+    {"item": "家賃", "category": "住居費", "amount": 125457, "comment": "毎月の家賃"},
+    {"item": "保険料", "category": "保険料", "amount":15000, "comment": "概算"},
+    {"item": "スマホ代", "category": "通信費", "amount": , "comment": "基本料"}
 ]
-
-通常の入力の場合は、品目(item)、カテゴリ(category)、金額(amount:数値)、短いコメント(comment)を抽出してください。
-金額が不明な場合は0にしてください。
 """
 
-with tab1: # 音声入力
-    st.write("話しかけてください。（例：「コンビニでパンを200円で買った」「固定費入れて」）")
-    audio_value = st.audio_input("録音開始")
+with tab1: # 入力画面（音声＆カメラ）
+    st.write("##### 🗣️ 音声で入力")
+    audio_value = st.audio_input("話しかけて記録")
 
     if audio_value:
         with st.spinner('音声解析中...'):
             with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as tmp_file:
                 tmp_file.write(audio_value.read())
                 tmp_path = tmp_file.name
-            
             audio_file = genai.upload_file(path=tmp_path)
             response = model.generate_content([SYSTEM_PROMPT, audio_file])
-            
-            # 共通処理へ
             try:
                 json_str = response.text.replace("```json", "").replace("```", "").strip()
                 data_list = json.loads(json_str)
-                # 辞書型ならリストに変換
                 if isinstance(data_list, dict): data_list = [data_list]
-                
                 if add_to_sheet(data_list):
                     st.success(f"✅ {len(data_list)}件 保存しました！")
-                    st.rerun() # 画面更新してバーを反映
+                    st.rerun()
             except Exception as e:
                 st.error(f"エラー: {e}")
             os.remove(tmp_path)
 
-with tab2: # カメラ入力
-    st.write("レシートを撮影してください。")
-    img_file = st.camera_input("カメラ起動")
-
+    st.write("---")
+    st.write("##### 📸 レシートで入力")
+    img_file = st.camera_input("レシート撮影")
     if img_file:
-        with st.spinner('レシート読み取り中...'):
+        with st.spinner('解析中...'):
             image = Image.open(img_file)
             response = model.generate_content([SYSTEM_PROMPT, image])
-            
             try:
                 json_str = response.text.replace("```json", "").replace("```", "").strip()
                 data_list = json.loads(json_str)
                 if isinstance(data_list, dict): data_list = [data_list]
-
                 if add_to_sheet(data_list):
-                    st.success(f"✅ レシートから {len(data_list)}件 保存しました！")
-                    # 詳細表示
-                    for item in data_list:
-                        st.write(f"- {item['item']}: ¥{item['amount']}")
-                    if st.button("更新"):
-                        st.rerun()
+                    st.success(f"✅ {len(data_list)}件 保存しました！")
+                    st.rerun()
             except Exception as e:
-                st.error(f"読み取りエラー: {e}")
+                st.error(f"エラー: {e}")
 
-with tab3:
-    st.write("スプレッドシートへのリンク:")
-    st.link_button("シートを開く", SPREADSHEET_URL)
-    # 最新5件を表示
-    try:
-        sheet = get_sheet()
-        df = pd.DataFrame(sheet.get_all_records())
-        st.dataframe(df.tail(5))
-    except:
-        st.write("まだデータがありません")
+with tab2: # 分析グラフ（ここが新機能！）
+    st.subheader("📊 今月の収支レポート")
+    if not monthly_df.empty:
+        # 1. カテゴリ別（円グラフ）
+        st.write("**カテゴリ別の支出割合**")
+        category_sum = monthly_df.groupby('カテゴリ')['金額'].sum()
+        st.bar_chart(category_sum) # Streamlit標準の棒グラフで見やすく
+
+        # 2. 日別推移（棒グラフ）
+        st.write("**日別の支出推移**")
+        daily_sum = monthly_df.groupby('日付')['金額'].sum()
+        st.line_chart(daily_sum)
+    else:
+        st.info("今月のデータはまだありません。")
+
+with tab3: # 履歴リスト
+    st.subheader("📝 最近の記録")
+    if not df.empty:
+        st.dataframe(df.tail(10).iloc[::-1]) # 新しい順に表示
+    else:
+        st.write("データなし")

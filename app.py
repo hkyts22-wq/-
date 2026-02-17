@@ -46,6 +46,7 @@ def add_to_sheet(data_list):
     """リスト形式のデータをまとめて保存する"""
     try:
         sheet = get_sheet()
+        # ヘッダーが無い場合は追加
         if len(sheet.get_all_values()) == 0:
             sheet.append_row(["日付", "品目", "カテゴリ", "金額", "AIコメント"])
             
@@ -57,7 +58,7 @@ def add_to_sheet(data_list):
                 item.get('item', '不明'),
                 item.get('category', 'その他'),
                 item.get('amount', 0),
-                item.get('comment', '')
+                item.get('comment', '特になし') # コメントがない場合のデフォルト
             ]
             rows_to_add.append(row)
         sheet.append_rows(rows_to_add)
@@ -67,22 +68,20 @@ def add_to_sheet(data_list):
         return False
 
 def get_data_df():
-    """スプレッドシートのデータをDataFrameとして取得（強力なクリーニング付き）"""
+    """スプレッドシートのデータをDataFrameとして取得（超強力クリーニング版）"""
     try:
         sheet = get_sheet()
         records = sheet.get_all_records()
         df = pd.DataFrame(records)
         
-        # データが空の場合
         if df.empty:
             return pd.DataFrame()
 
-        # カラム名の余計な空白を削除
+        # カラム名の空白削除
         df.columns = df.columns.str.strip()
         
         # 必須カラムチェック
         if '日付' not in df.columns or '金額' not in df.columns:
-            st.error("⚠️ スプレッドシートに「日付」または「金額」の列が見つかりません。1行目を確認してください。")
             return pd.DataFrame()
             
         return df
@@ -96,25 +95,26 @@ st.title(f"💰 My AI 家計簿")
 # データを取得
 df = get_data_df()
 
-# --- データの前処理（ここを強化しました） ---
+# --- データの前処理（集計用） ---
 monthly_df = pd.DataFrame()
 total_spent = 0
 
 if not df.empty:
     try:
-        # 日付を強制的に統一フォーマットに変換
+        # 1. 日付の変換
         df['日付'] = pd.to_datetime(df['日付'], errors='coerce')
-        # 金額を数値に変換
+        
+        # 2. 金額の強力なクリーニング（「1,000」「¥1000」なども数値に変換）
+        df['金額'] = df['金額'].astype(str).str.replace(',', '').str.replace('¥', '').str.replace('円', '')
         df['金額'] = pd.to_numeric(df['金額'], errors='coerce').fillna(0)
         
-        # 今月のデータを抽出
+        # 3. 今月のデータを抽出
         current_month = datetime.now().strftime("%Y-%m")
-        # 日付が無効な行（Nat）を除外してフィルタリング
         monthly_df = df[df['日付'].dt.strftime('%Y-%m') == current_month].copy()
         
         total_spent = monthly_df['金額'].sum()
     except Exception as e:
-        st.error(f"集計エラー: {e}")
+        st.error(f"集計処理エラー: {e}")
 
 remaining = MONTHLY_BUDGET - total_spent
 ratio = min(total_spent / MONTHLY_BUDGET, 1.0) if MONTHLY_BUDGET > 0 else 0
@@ -130,16 +130,25 @@ if ratio >= 1.0:
     st.error("💸 予算オーバーです！")
 
 # --- メインエリア ---
-tab1, tab2 = st.tabs(["🎙️ 音声入力", "📊 分析グラフ"])
+tab1, tab2, tab3 = st.tabs(["🎙️ 音声入力", "📊 分析グラフ", "📝 履歴リスト"])
 
+# ★修正ポイント：コメント（comment）を必須にするよう指示を強化
 SYSTEM_PROMPT = """
 あなたは家計簿アシスタントです。音声入力からJSONデータを作成してください。
-フォーマットは必ずリスト形式 `[{"item":..., "category":..., "amount":...}, ...]` で返してください。
+フォーマットは必ず以下のJSONリスト形式で返してください。
+「comment」フィールドには、支出に対する短い感想やアドバイス（例：「無駄遣いかも？」「良い買い物！」など）を必ず入れてください。
+
+[
+    {"item": "品目名", "category": "食費", "amount": 1000, "comment": "少し高いですね"},
+    {"item": "品目名", "category": "日用品", "amount": 500, "comment": "必需品です"}
+]
+
+金額不明は0。
 ユーザーが「固定費」と言及した場合は、以下のリストを返してください：
 [
-    {"item": "家賃", "category": "住居費", "amount": 80000, "comment": "毎月の家賃"},
-    {"item": "電気代", "category": "光熱費", "amount": 5000, "comment": "概算"},
-    {"item": "スマホ代", "category": "通信費", "amount": 3500, "comment": "基本料"}
+    {"item": "家賃", "category": "住居費", "amount": 80000, "comment": "毎月の家賃です"},
+    {"item": "電気代", "category": "光熱費", "amount": 5000, "comment": "節約しましょう"},
+    {"item": "スマホ代", "category": "通信費", "amount": 3500, "comment": "プラン見直しも検討？"}
 ]
 """
 
@@ -179,24 +188,22 @@ with tab1:
 
 with tab2:
     st.subheader("📊 今月の収支レポート")
-    
     if not monthly_df.empty:
-        # カテゴリ別 円グラフ（のような棒グラフ）
         st.write("**カテゴリ別の支出**")
         category_sum = monthly_df.groupby('カテゴリ')['金額'].sum()
         st.bar_chart(category_sum)
 
-        # 日別推移
         st.write("**日別の支出推移**")
         daily_sum = monthly_df.groupby('日付')['金額'].sum()
         st.line_chart(daily_sum)
-        
-        # 生データ確認用（デバッグ）
-        with st.expander("データ詳細を見る"):
-            st.dataframe(monthly_df)
     else:
-        st.info("今月のデータがまだありません。")
-        if not df.empty:
-            st.warning(f"※スプレッドシート全体には {len(df)} 件のデータがありますが、日付が今月（{datetime.now().strftime('%Y-%m')}）のものがありません。")
-            with st.expander("全データを確認"):
-                st.dataframe(df)
+        st.info("今月のデータが表示できません。")
+        st.write("※スプレッドシートにデータはあるのに表示されない場合、日付が今月のものであるか確認してください。")
+
+with tab3:
+    st.subheader("📝 全データの履歴")
+    if not df.empty:
+        # 日付順に並べて表示
+        st.dataframe(df.sort_values('日付', ascending=False))
+    else:
+        st.write("データなし")
